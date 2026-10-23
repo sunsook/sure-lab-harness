@@ -6,6 +6,8 @@ harness.config.json 의 "checks" 는 {경로 앞부분: 명령}. 예:
 
 바뀐 경로 = 커밋되지 않은 변경(git diff HEAD) + 추적 안 되는 새 파일.
 종료 코드: 0 통과 또는 확인할 것 없음 · 2 확인 실패(출력이 Claude 에게 돌아간다).
+이미 한 번 막은 뒤 다시 불리면(stdin 의 stop_hook_active) 실패가 남아도 0 — 시험이 일부러 FAIL 인 상태
+(기대값을 바꾼 직후 · TDD RED)에서 종료를 끝없이 막지 않는다.
 """
 
 import json
@@ -32,10 +34,22 @@ def changed_paths() -> list[str]:
     return sorted(set(out))
 
 
+def stop_hook_active() -> bool:
+    """Claude Code 가 stdin JSON 에 넣는 stop_hook_active — 손으로 돌릴 때(터미널 · 빈 입력)는 거짓."""
+    if sys.stdin is None or sys.stdin.isatty():
+        return False
+    try:
+        raw = sys.stdin.buffer.read().decode("utf-8")
+        return bool(json.loads(raw).get("stop_hook_active")) if raw.strip() else False
+    except (ValueError, AttributeError):
+        return False
+
+
 def main() -> int:
     # Windows 콘솔 기본(cp949)으로는 한글 · 기호 출력이 깨진다
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
+    already_blocked = stop_hook_active()
     if not CONFIG.exists():
         print("check_changed: harness.config.json 없음 — 확인할 경로 없음")
         return 0
@@ -62,6 +76,9 @@ def main() -> int:
         if r.returncode != 0:
             failed.append(cmd)
             print(f"--- {cmd} ---\n{r.stdout}{r.stderr}", file=sys.stderr)
+    if failed and already_blocked:
+        print(f"check_changed: 실패 {len(failed)}건이 남았지만 이미 한 번 막았다(stop_hook_active) — 이번엔 통과")
+        return 0
     if failed:
         print(f"check_changed: 실패 {len(failed)}건 — {', '.join(failed)}", file=sys.stderr)
         return 2
